@@ -19,6 +19,8 @@ class syntax_plugin_admnote_renderer extends DokuWiki_Syntax_Plugin {
     var $deftype = 'note';
     /* title switch */
     var $handletitle = FALSE;
+    /* stack to detect empty admonition bodies */
+    protected $contentSeenStack = array();
 
     /**
      * @return string Syntax mode type
@@ -89,6 +91,7 @@ class syntax_plugin_admnote_renderer extends DokuWiki_Syntax_Plugin {
         $data = array();
         $cssClass = '';
         $heading = '';
+        $collapse = 'open';
         switch($state) {
             case DOKU_LEXER_ENTER:
                 $match = trim(str_replace(array('<','>'),'',$match));
@@ -100,12 +103,25 @@ class syntax_plugin_admnote_renderer extends DokuWiki_Syntax_Plugin {
                 } else {
                     $cssClass = $this->deftype;
                 }
+
+                if ($words) {
+                    $toggleWord = strtolower(trim($words[0]));
+                    if ($toggleWord === 'open' || $toggleWord === 'close') {
+                        $collapse = $toggleWord;
+                        array_shift($words);
+                    }
+                }
+
                 if($words) {
                     $heading = implode(' ',$words);
                 } else {
                     $heading = $lang['adm_'.$cssClass];
                 }
-                $data = array($state, $cssClass.'#'.$heading);
+                $data = array($state, array(
+                    'class' => $cssClass,
+                    'heading' => $heading,
+                    'collapse' => $collapse,
+                ));
                 break;
 
             case DOKU_LEXER_UNMATCHED:
@@ -137,23 +153,54 @@ class syntax_plugin_admnote_renderer extends DokuWiki_Syntax_Plugin {
 
           switch($state) {
               case DOKU_LEXER_ENTER:
-                  list($cssClass, $heading) = explode('#',$text);
-
-                  $details_state = 'open="open"';
-                  if($cssClass === 'question') {
-                    $details_state = '';
+                  if (is_array($text)) {
+                      $cssClass = (string)($text['class'] ?? $this->deftype);
+                      $heading = (string)($text['heading'] ?? '');
+                      $collapse = (string)($text['collapse'] ?? 'open');
+                  } else {
+                      // Legacy payload fallback
+                      $parts = explode('#', (string)$text, 2);
+                      $cssClass = (string)($parts[0] ?? $this->deftype);
+                      $heading = (string)($parts[1] ?? '');
+                      $collapse = 'open';
                   }
 
-                  $renderer->doc .= '<details class="admonition '.$cssClass.'" '.$details_state.'>'."\n";
+                  // Behavior:
+                  // - open (or omitted): open + locked (non-clickable)
+                  // - close: closed + clickable
+                  $details_state = 'open="open"';
+                  $lock_attr = ' data-adm-lock="1"';
+                  if($collapse === 'open') {
+                    $details_state = 'open="open"';
+                    $lock_attr = ' data-adm-lock="1"';
+                  } else if ($collapse === 'close') {
+                    $details_state = '';
+                    $lock_attr = '';
+                  }
+
+                  $renderer->doc .= '<details class="admonition '.$cssClass.'" '.$details_state.$lock_attr.'>'."\n";
                   $renderer->doc .= '<summary class="admonition-title">'.
                                     $renderer->_xmlEntities($heading)."</summary>\n";
+                  $this->contentSeenStack[] = false;
                   break;
 
               case DOKU_LEXER_UNMATCHED:
+                  $idx = count($this->contentSeenStack) - 1;
+                  if ($idx >= 0 && trim($text) !== '') {
+                      $this->contentSeenStack[$idx] = true;
+                  }
                   $renderer->doc .= $renderer->_xmlEntities($text);
                   break;
 
               case DOKU_LEXER_EXIT:
+                  $idx = count($this->contentSeenStack) - 1;
+                  $hasContent = $idx >= 0 ? (bool)$this->contentSeenStack[$idx] : false;
+                  if ($idx >= 0) array_pop($this->contentSeenStack);
+
+                  // Keep a visible empty line when the block has no content at all.
+                  if (!$hasContent) {
+                      $renderer->doc .= "<p>&nbsp;</p>\n";
+                  }
                   $renderer->doc .= "\n</details>";
                   break;
           }

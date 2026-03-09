@@ -37,16 +37,36 @@ class action_plugin_admnote_prosemirror extends \dokuwiki\Extension\ActionPlugin
         $dataContent = $data['data'][1];
 
         if($data['state'] === 1) {
-            $tag_parts = explode('#', $dataContent);
+            $type = 'note';
+            $title = '';
+            $collapse = 'open';
+
+            if (is_array($dataContent)) {
+                $type = strtolower((string)($dataContent['class'] ?? 'note'));
+                $title = (string)($dataContent['heading'] ?? '');
+                $collapse = strtolower((string)($dataContent['collapse'] ?? 'open'));
+            } else {
+                $tag_parts = explode('#', (string)$dataContent, 2);
+                $type = strtolower((string)($tag_parts[0] ?? 'note'));
+                $title = (string)($tag_parts[1] ?? '');
+            }
+
+            if (!in_array($type, $this->admTypes, true)) {
+                $type = 'note';
+            }
+            if ($collapse !== 'open' && $collapse !== 'close') {
+                $collapse = 'open';
+            }
 
             $node = new Node('admnote');
-            $node->attr('type', $tag_parts[0]);
+            $node->attr('type', $type);
+            $node->attr('collapse', $collapse);
 
             $data['renderer']->nodestack->addTop($node);
 
             $titleNode = new Node('admnote_title');
             $titleTextNode = new Node('text');
-            $titleTextNode->setText($tag_parts[1]);
+            $titleTextNode->setText($title);
             $titleNode->addChild($titleTextNode);
             $data['renderer']->nodestack->add($titleNode);
 
@@ -111,6 +131,10 @@ class action_plugin_admnote_prosemirror extends \dokuwiki\Extension\ActionPlugin
                 if ($added) $hasContent = true;
             }
 
+            if (!$hasContent) {
+                $this->addEmptyContentParagraph($data['renderer']);
+            }
+
             $data['renderer']->nodestack->drop('admnote_content');
             $data['renderer']->nodestack->drop('admnote');
         }
@@ -119,16 +143,13 @@ class action_plugin_admnote_prosemirror extends \dokuwiki\Extension\ActionPlugin
     }
 
     /**
-     * Add a valid default paragraph inside admnote_content when source is empty.
+     * Add an empty paragraph inside admnote_content when source is empty.
      *
      * @param renderer_plugin_prosemirror $renderer
      * @return void
      */
-    protected function addDefaultContentParagraph($renderer) {
+    protected function addEmptyContentParagraph($renderer) {
         $paragraphNode = new Node('paragraph');
-        $textNode = new Node('text');
-        $textNode->setText($this->getLang('adm_default_content'));
-        $paragraphNode->addChild($textNode);
         $renderer->nodestack->add($paragraphNode);
     }
 
@@ -277,7 +298,16 @@ class action_plugin_admnote_prosemirror extends \dokuwiki\Extension\ActionPlugin
             $type = 'note';
         }
 
+        $collapse = 'open';
         $title = isset($parts[1]) ? trim($parts[1]) : '';
+        if ($title !== '') {
+            $titleParts = preg_split('/\s+/', $title, 2);
+            $toggleWord = strtolower((string)($titleParts[0] ?? ''));
+            if ($toggleWord === 'open' || $toggleWord === 'close') {
+                $collapse = $toggleWord;
+                $title = isset($titleParts[1]) ? trim((string)$titleParts[1]) : '';
+            }
+        }
         if ($title === '') {
             $title = (string)$this->getLang('adm_' . $type);
             if ($title === '') $title = ucfirst($type);
@@ -285,6 +315,7 @@ class action_plugin_admnote_prosemirror extends \dokuwiki\Extension\ActionPlugin
 
         $node = new Node('admnote');
         $node->attr('type', $type);
+        $node->attr('collapse', $collapse);
         $renderer->nodestack->addTop($node);
 
         $titleNode = new Node('admnote_title');
@@ -296,6 +327,9 @@ class action_plugin_admnote_prosemirror extends \dokuwiki\Extension\ActionPlugin
         $contentNode = new Node('admnote_content');
         $renderer->nodestack->addTop($contentNode);
         $added = $this->addParsedInlineAdmnotes($renderer, (string)$body);
+        if (!$added) {
+            $this->addEmptyContentParagraph($renderer);
+        }
 
         $renderer->nodestack->drop('admnote_content');
         $renderer->nodestack->drop('admnote');

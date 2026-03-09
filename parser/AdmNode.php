@@ -41,11 +41,24 @@ class AdmNode extends Node {
         }
         $body = implode("\n", $subnodes);
 
+        // Keep one explicit empty line for empty admnotes.
+        if ($body === '') {
+            $body = "\n";
+        }
+
         // Keep opening/closing tags on dedicated lines to avoid list/table parsing issues.
         if ($body !== '' && substr($body, -1) !== "\n") {
             $body .= "\n";
         }
 
-        return "<adm " . $this->attrs['type'] . " " . $this->attrs['title'] . ">\n" . $body . "</adm>";
+        $toggle = '';
+        if (isset($this->attrs['collapse'])) {
+            $collapse = strtolower((string)$this->attrs['collapse']);
+            if ($collapse === 'close') {
+                $toggle = 'close ';
+            }
+        }
+
+        return "<adm " . $this->attrs['type'] . " " . $toggle . $this->attrs['title'] . ">\n" . $body . "</adm>";
     }
 }

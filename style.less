@@ -59,6 +59,17 @@
 	&[open] .admonition-title {
 		cursor: zoom-out;
 	}
+	&[data-adm-lock="1"] > .admonition-title {
+		cursor: default;
+		pointer-events: none;
+		list-style: none;
+	}
+	&[data-adm-lock="1"] > .admonition-title::-webkit-details-marker {
+		display: none;
+	}
+	&[data-adm-lock="1"] > .admonition-title::marker {
+		content: "";
+	}
 	&.question summary {
 		display: list-item;
 	}
