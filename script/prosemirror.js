@@ -73,6 +73,26 @@
         return normalized.charAt(0).toUpperCase() + normalized.slice(1);
     }
 
+    function isSelectionInsideCodeOrTable(state) {
+        if (!state || !state.selection || !state.selection.$from) return false;
+        const blocked = new Set([
+            'code_block',
+            'preformatted',
+            'table',
+            'table_row',
+            'table_cell',
+            'table_header'
+        ]);
+
+        const $from = state.selection.$from;
+        for (let depth = $from.depth; depth >= 0; depth -= 1) {
+            const node = $from.node(depth);
+            const typeName = node && node.type ? node.type.name : '';
+            if (blocked.has(typeName)) return true;
+        }
+        return false;
+    }
+
     window.Prosemirror.pluginSchemas.push((nodes, marks) => {
         let admnoteTitle = {
             content: 'text*',
@@ -172,12 +192,42 @@
             });
             this.toolbar.appendChild(this.deleteBtn);
 
+            this.exitBtn = document.createElement('button');
+            this.exitBtn.type = 'button';
+            this.exitBtn.className = 'admnote-pm-exit';
+            this.exitBtn.title = 'Exit admnote';
+            this.exitBtn.setAttribute('aria-label', 'Exit admnote');
+            this.exitBtn.style.cssText = 'margin-left:8px;display:inline-flex;align-items:center;justify-content:center;background:none;border:1px solid #bbb;border-radius:4px;padding:2px 6px;cursor:pointer;font-size:12px;';
+            this.exitBtn.textContent = 'Ctrl+Enter';
+            this.exitBtn.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                this.insertParagraphAfterNode();
+            });
+            this.toolbar.appendChild(this.exitBtn);
+
             this.dom.appendChild(this.toolbar);
 
             this.admDom = document.createElement('div');
             this.admDom.className = 'admonition ' + (node.attrs.type || 'note');
+            const exitHint = (
+                window.LANG &&
+                LANG.plugins &&
+                LANG.plugins.prosemirror &&
+                LANG.plugins.prosemirror.code_block_hint
+            ) || 'Press CTRL+Enter to exit';
+            this.admDom.setAttribute('data-exithint', exitHint);
             this.dom.appendChild(this.admDom);
-            this.dom.addEventListener('keydown', this.onKeyDown);
+
+            this.exitHint = document.createElement('div');
+            this.exitHint.className = 'admnote-pm-exithint';
+            this.exitHint.setAttribute('contenteditable', 'false');
+            this.exitHint.style.cssText = 'font-size:11px;line-height:1.3;color:#777;padding:4px 10px 8px;text-align:right;user-select:none;';
+            this.exitHint.textContent = exitHint;
+            this.dom.appendChild(this.exitHint);
+
+            this.dom.addEventListener('keydown', this.onKeyDown, true);
+            this.admDom.addEventListener('keydown', this.onKeyDown, true);
             this.admDom.addEventListener('mousedown', this.onContentMouseDown);
 
             // Keep admnote children as direct descendants of .admonition
@@ -187,7 +237,10 @@
 
         onKeyDown(event) {
             if (!event) return;
-            if (!(event.ctrlKey && event.key === 'Enter')) return;
+            const isEnter = event.key === 'Enter' || event.code === 'Enter' || event.code === 'NumpadEnter';
+            const hasModifier = !!event.ctrlKey || !!event.metaKey;
+            if (!(hasModifier && isEnter)) return;
+            if (isSelectionInsideCodeOrTable(this.outerView.state)) return;
 
             event.preventDefault();
             event.stopPropagation();
@@ -205,14 +258,25 @@
             const paragraph = schema.nodes.paragraph.createAndFill();
             if (!paragraph) return;
 
-            const insertPos = pos + this.node.nodeSize;
-            let tr = state.tr.insert(insertPos, paragraph);
+            let insertPos = pos + this.node.nodeSize;
+            let tr = state.tr;
+            try {
+                tr = tr.insert(insertPos, paragraph);
+            } catch (e) {
+                // Fallback for edge cases (e.g. end-of-doc mapping issues).
+                insertPos = state.doc.content.size;
+                tr = state.tr.insert(insertPos, paragraph);
+            }
 
             const TextSelection = window.Prosemirror &&
                 window.Prosemirror.classes &&
                 window.Prosemirror.classes.TextSelection;
             if (TextSelection && typeof TextSelection.create === 'function') {
-                tr = tr.setSelection(TextSelection.create(tr.doc, insertPos + 1));
+                try {
+                    tr = tr.setSelection(TextSelection.create(tr.doc, insertPos + 1));
+                } catch (e) {
+                    // Selection fallback: dispatch inserted paragraph without explicit cursor move.
+                }
             }
 
             this.outerView.dispatch(tr.scrollIntoView());
@@ -307,7 +371,7 @@
         }
 
         stopEvent(event) {
-            return !!(event && (event.target === this.select || event.target === this.deleteBtn || this.toolbar.contains(event.target)));
+            return !!(event && (event.target === this.select || event.target === this.deleteBtn || event.target === this.exitBtn || this.toolbar.contains(event.target)));
         }
 
         ignoreMutation() {
@@ -316,9 +380,10 @@
 
         destroy() {
             if (this.dom) {
-                this.dom.removeEventListener('keydown', this.onKeyDown);
+                this.dom.removeEventListener('keydown', this.onKeyDown, true);
             }
             if (this.admDom) {
+                this.admDom.removeEventListener('keydown', this.onKeyDown, true);
                 this.admDom.removeEventListener('mousedown', this.onContentMouseDown);
             }
         }
@@ -395,6 +460,63 @@
         }
     }
 
+    function findAdmnoteAtSelection(state) {
+        if (!state || !state.selection) return null;
+        const {selection} = state;
+        if (selection.node && selection.node.type && selection.node.type.name === 'admnote') {
+            return {node: selection.node, pos: selection.from};
+        }
+
+        const $from = selection.$from;
+        if (!$from) return null;
+
+        if ($from.depth > 0 && $from.parent && $from.parent.type && $from.parent.type.name === 'admnote') {
+            return {node: $from.parent, pos: $from.before($from.depth)};
+        }
+        if ($from.nodeBefore && $from.nodeBefore.type && $from.nodeBefore.type.name === 'admnote') {
+            return {node: $from.nodeBefore, pos: $from.pos - $from.nodeBefore.nodeSize};
+        }
+        if ($from.nodeAfter && $from.nodeAfter.type && $from.nodeAfter.type.name === 'admnote') {
+            return {node: $from.nodeAfter, pos: $from.pos};
+        }
+
+        for (let depth = $from.depth; depth > 0; depth -= 1) {
+            const ancestor = $from.node(depth);
+            if (ancestor && ancestor.type && ancestor.type.name === 'admnote') {
+                return {node: ancestor, pos: $from.before(depth)};
+            }
+        }
+        return null;
+    }
+
+    function insertParagraphAfterSelectedAdmnote(view) {
+        if (!view || !view.state) return false;
+        const selected = findAdmnoteAtSelection(view.state);
+        if (!selected) return false;
+
+        const {schema} = view.state;
+        const paragraph = schema && schema.nodes && schema.nodes.paragraph
+            ? schema.nodes.paragraph.createAndFill()
+            : null;
+        if (!paragraph) return false;
+
+        const insertPos = selected.pos + selected.node.nodeSize;
+        let tr = view.state.tr.insert(insertPos, paragraph).scrollIntoView();
+        view.dispatch(tr);
+
+        try {
+            const SelectionClass = view.state.selection.constructor;
+            const $target = view.state.doc.resolve(insertPos + 1);
+            const nextSel = SelectionClass.near($target, 1);
+            view.dispatch(view.state.tr.setSelection(nextSel).scrollIntoView());
+        } catch (e) {
+            // Keep default selection when explicit cursor move fails.
+        }
+
+        view.focus();
+        return true;
+    }
+
     window.Prosemirror.pluginNodeViews.admnote = function admnote(node, outerView, getPos) {
         return new AdmnoteNodeView(node, outerView, getPos);
     };
@@ -435,6 +557,25 @@
         subtree: true
     });
     scheduleAdmnoteMove();
+
+    if (!window.__admnoteKeyboardGuardInstalled) {
+        window.__admnoteKeyboardGuardInstalled = true;
+        document.addEventListener('keydown', (event) => {
+            if (!event) return;
+            const isEnter = event.key === 'Enter' || event.code === 'Enter' || event.code === 'NumpadEnter';
+            const hasModifier = !!event.ctrlKey || !!event.metaKey;
+            if (!(hasModifier && isEnter)) return;
+
+            const view = window.Prosemirror && window.Prosemirror.view;
+            if (!view || !view.state) return;
+            if (!findAdmnoteAtSelection(view.state)) return;
+            if (isSelectionInsideCodeOrTable(view.state)) return;
+
+            event.preventDefault();
+            event.stopPropagation();
+            insertParagraphAfterSelectedAdmnote(view);
+        }, true);
+    }
     }
 
     jQuery(document).on('PROSEMIRROR_API_INITIALIZED', initializeAdmnoteProsemirror);
